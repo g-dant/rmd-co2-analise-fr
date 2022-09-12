@@ -1,0 +1,40 @@
+Cluster.Index,Cluster.Cod,Cluster.Description
+1,IDTMMDD,"Agricultura, Mineração, IDH, Atividade Industrial, Densidade Demográfica, "
+2,TRMCOAA,Terras arradas e emissões de CO2
+3,IMPUCIMA,Impactos ambientais da mudança das populações urbana e do campo na importação de alimentos.
+4,PROCERTE,Produção de cereais terrestres (hectares)
+5,CONEFNAE,"Consumo de energia fóssil, nuclear, alternativa, produção de eletricidade e emissões de CO2. "
+6,NETINOREA,Lucro líquido e ativos no exterior
+7,FOOMIDHS,"Relação entre alimentos, combustíveis renováveis ou não e índices de desenvolvimento. "
+8,AREASUPRF,Área da superfície (km2)
+9,MEOPAFM,"Mercadorias exportadas de outros países como África, Oriente Médio e Ásia, especialmente eletrônicos"
+10,PRDGIDPO,Produção de gás e idade da população
+11,EIEIMPCO2,"Eletricidade, importação de energia e emissões de CO2"
+12,PRODRNM,Produção de energias renováveis e merchandise para exportações para desenvolvimento do Oriente Médio.
+13,PRCO2CVB,"Produção rural, emissão CO2 de biodisel e combustíves renováveis"
+14,CO2RBCPS,"Emissão de CO2 em residências, prédios comerciais e governamentais"
+15,CO2ELAQP,Emissão de CO2 por meio de eletricidade e de aquecimento da produção
+16,EXIMBEMS,Exportações e Importações de bens e serviços
+17,INFLACAO,Inflação
+18,CLCGIDHS,Desenvolvimento humano
+19,CREDDOM,Crédito doméstico
+20,CPRAPLPA,Crescimento da população rural e aplicação de patentes.
+21,TRADEMA,Pedidos de marcas registradas
+22,IMPARMS,Importação de armas
+23,EXPARMS,Exportação de armas
+24,DESPADP,Despesas da administração pública
+25,EXPBEMS,Exportar bens e serviços
+26,IMPBEMS,Importar bens e serviços
+27,BALEXBS,Balanço externo de bens e serviços
+28,AGRICUL,Agricultura
+29,INDPROC,"Indústria, produção industrial e crescimento econômico"
+30,TOTEBIO,TOT (terms of trade) e exportação de biodísel 
+31,FCDECAL,Fator de conversão DEC alternativa. (conversão da moeda local para dólar)
+32,CRESPRF,Crescimento populacional e razão de fertilidade
+33,CPFEMIN,Consumo da população feminina
+34,IMBIODI,Importação de Biodísel
+35,EMIMAN,Exportação de minérios e importação de manufaturados. 
+36,MIMPOR,Mercadorias importadas para desenvolvimento da América Latina e 
+37,MPODCEX,Mercadorias importadas declaradas e comidas exportadas
+38,MEXMCAR,Mercadorias exportadas para desenvolvidmento de economias na América Latina e Caribe.
+39,MEXPDSAS,Mercadorias exportadas para desenvolvidmento de economias do Sul da Ásia.

@@ -1,0 +1,342 @@
+---
+title: "Trabalho_FGV"
+date: "26/10/2019"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(magrittr)
+library(readxl)
+library(DT)
+library(ggplot2)
+library(zoo)
+library(plotly)
+library(ggcorrplot)
+library(cluster)
+library(igraph)
+library(reshape2)
+library(ggraph)
+library(dendextend)
+
+registerDoParallel(cores=8)
+
+print(getwd())
+
+```
+
+## 1. Primeiro Passo - Verificação de Dados
+
+Iremos iniciar o trabalho verificando os dados que temos para a realização da análise. Para isso, seguiremos a seguinte sequência de passos:
+
+* Verificar o arquivo de entrada
+* Conferir quais atributos possuem informações para todos os instantes de tempo da análise
+* Conferir quais atributos possuem informações parciais (missing data)
+* Conferir e eliminar atributos que não possuem informações ou possuem uma quantidade muito reduzida de dados, de forma a inviabilizar a análise
+
+```{r}
+
+df_in <- read_excel('/home/x/Área de Trabalho/FRA_Country_en_excel_v2.xls')
+df_in[, 1:3] %>% head
+
+```
+Os dados parecem extremamente desorganizados. Precisamos, primeiramente, eliminar as duas primeiras linhas e tornar a terceira linha o header do Data Frame:
+
+```{r}
+
+colnames(df_in) <- df_in[3,] %>% unlist
+df_in <- df_in[-c(1, 2, 3),]
+df_in[, 1:3] %>% head
+
+```
+
+Sabemos que o país é a França, então podemos eliminar o nome e o código do país. O nome do indicador será utilizado para se referir à variável e o nome do indicador será eliminado da tabela. Um segundo Data Frame relacionando os códigos dos indicadores aos nomes será criado e funcionará como uma tabela de metadados:
+
+```{r}
+
+df_in_meta <- df_in %>% select(`Indicator Name`, `Indicator Code`)
+df_in_meta %>% head
+
+```
+
+Eliminando os metadados e as informações redundantes de país da tabela de dados:
+
+```{r}
+
+df_in <- df_in %>% select(-`Country Name`, -`Country Code`, -`Indicator Name`)
+df_in[, 1:3] %>% head
+
+```
+
+Podemos notar que existem muitos indicadores com um altíssimo número de dados perdidos. Iremos então verificar em uma tabela a quantidade de dados perdidos por indicador, para descobrir quais indicadores não serão levados em consideração na análise:
+
+```{r}
+
+df_in$`N. Missing` <- apply(df_in, 1, function(x) (is.na(x) %>% sum))
+df_in$`Perc. Missing` <- df_in$`N. Missing` / (ncol(df_in) - 2)
+
+df_in_missing <- df_in %>% 
+  select(`Indicator Code`, `N. Missing`, `Perc. Missing`) %>% 
+  arrange(desc(`N. Missing`))
+
+```
+
+Escrevendo a a saída em uma tabela Shiny formatada e em um gráfico de barra com o percentual de dados perdidos:
+
+```{r}
+
+renderPlot({ 
+  ggplot(data=df_in_missing, aes(x=`N. Missing`)) + 
+    geom_histogram() + xlab('N. Dados Perdidos') + ylab('Freq. Absoluta')
+})
+
+renderDataTable({ df_in_missing })
+
+```
+
+Se tomarmos um limiar igual a 5, admitiremos um valor de perda máximo de dados igual a a aproximadamente 10% e teremos no mínimo 50 pontos de amostra para gerar o modelo:
+
+```{r}
+
+renderPlot({ 
+  ggplot(data=df_in_missing %>% filter(`N. Missing` <= 5), aes(x=`N. Missing`)) + 
+    geom_histogram() + xlab('N. Dados Perdidos') + ylab('Freq. Absoluta')
+})
+
+renderDataTable({ df_in_missing %>% filter(`N. Missing` <= 5) })
+
+```
+
+De acordo com o histograma, ainda que tal critério rigoroso seja adotado, uma grande quantidade de indicadores continua disponível: reduzimos o escopo da análise de 1200 indicadores para 200 indicadores e, ainda assim, temos um grande volume de dados.
+
+Podemos, então, plotar conjuntamente os diagramas para verificar, de maneira superficial, o aspecto das curvas que serão submetidas a análise. Para facilitar tal tarefa, iremos transpor a tabela filtrada:
+
+```{r}
+
+df_in <- df_in %>% filter(`N. Missing` <= 5)
+data_matrix <- df_in[1:nrow(df_in), 2:(ncol(df_in) - 2)]
+df_in_t <- t(data_matrix) %>% as.data.frame
+colnames(df_in_t) <- df_in$`Indicator Code`
+df_in_t$Year <- colnames(df_in)[2:(ncol(df_in) - 2)]
+df_in_t[,1:3] %>% head
+
+write.csv(df_in_t, './DF_BEFORE.csv')
+
+```
+
+Plotando a evolução de cada uma das variáveis em função do tempo:
+
+```{r}
+
+df_in_p <- df_in_t %>% gather('Indicator', 'Value', -Year)
+
+df_in_p <- df_in_p %>% transform(Year=as.numeric(Year)) %>% transform(Value=as.numeric(Value))
+ggplot(df_in_p, aes(x=Year, y=Value, color=Indicator)) + geom_line() + theme(legend.position="none")
+
+```
+
+Podemos observar que existem dados perdidos devidos aos "Warnings" recebidos. Na próxima seção iremos corrigir esse problema.
+
+# 2. Segundo Passo - Preenchimento de Missing Data
+
+A função "approx" da biblioteca zoo permite que realizemos interpolação linear para preencher os dados faltantes de cada uma das séries. Esse procedimento é mais coerente que simplesmente copiar os dados do passado ou do futuro para completar as células iguais a NA.
+
+Esse procedimento não considera os pontos extremos com valores iguais a NA, razão pela qual, após a interpolação, escrevemos uma rotina para preencher os valores extremos com o próximo valor nao nulo ou o valor não nulo imediatamente anterior.
+
+
+```{r}
+
+indicators_list <- colnames(df_in_t %>% select(-Year))
+for (curr_indicator in indicators_list) {
+  
+  curr_list <- df_in_t[curr_indicator]
+  curr_list <- na.approx(curr_list, na.rm = FALSE)
+  
+  non_NA_index <- which(!is.na(curr_list))
+  first_non_NA <- min(non_NA_index)
+  last_non_NA <- max(non_NA_index)
+  
+  if (first_non_NA > 1){
+    curr_list[1:(first_non_NA - 1)] = curr_list[first_non_NA]
+  }
+  if (last_non_NA < length(curr_list)) {
+    curr_list[(last_non_NA + 1):length(curr_list)] = curr_list[last_non_NA]
+  }
+  
+  df_in_t[curr_indicator] = curr_list
+}
+
+```
+
+Finalmente, podemos plotar novamente os gráficos:
+
+```{r}
+
+df_in_p <- df_in_t %>% gather('Indicator', 'Value', -Year)
+df_in_p[is.na(df_in_p)] <- 0
+
+df_in_p <- df_in_p %>% transform(Year=as.numeric(Year)) %>% transform(Value=as.numeric(Value))
+ggplot(df_in_p, aes(x=Year, y=Value, color=Indicator)) + geom_line() + theme(legend.position='none')
+
+```
+
+Não há alterações visíveis pois os dados perdidos se concentraram majoritariamente em posições extremas das seŕies. Em todo caso, os warnings de dados faltantes não se encontram mais presentes e podemos prosseguir para a próxima etapa: analisar a correlação e o relacionamento entre as variáveis.
+
+# 3. Terceiro Passo - Análise de Correlação
+
+Esta etapa se dividirá em duas partes:
+
+* Em um primeiro momento, estudaremos os relacionamentos mútuos entre cada par de variáveis que podemos tomar.
+* Em seguida, iremos verificar as correlações de cada uma das variáveis com a variável que iremos estudar (a emissão de CO²).
+* Finalmente, com essas informaçoes, iremos organizar e categorizar grupos de variáveis que estão fortemente correlacionadas utilizando técnicas de clusterização.
+
+## 3.1. Correlações Mútuas entre Variáveis
+
+Podemos plotar a correlação entre as variáveis em um mapa de calor. É inviável escrever o nome de cada uma das variáveis na matriz, entretanto, podemos, ao menos, observar o aspecto de tal mapa.
+
+```{r}
+
+cor_mat <- df_in_t %>% select(-Year) %>% cor
+ggcorrplot(cor_mat, tl.cex=0)
+
+```
+
+Aparentemente, os grupos de variáveis são fortemente relacionados entre si. Isso indica que podemos agrupar as variáveis em um número muito mais compacto de categorias sem que isso signifique prejuízo em nossa análise.
+
+Vejamos a correlação entre cada uma das variáveis com o dado em estudo na próxima subseção.
+
+## 3.2. Correlações com Emissão de CO²
+
+Antes de agruparmos as variáveis em categorias correlacionadas, vamos dar um "Zoom" na análise da seção anterior e nos ater à variável em estudo. Trata-se da emissão de CO² em KT, representada pela variável EN.ATM.CO2E.KT.
+
+Podemos visualizar as correlações de cada uma das demais variáveis por meio de um gráfico de barra.
+
+```{r}
+
+barplot(cor_mat[, 'EN.ATM.CO2E.KT'] %>% sort(decreasing=T))
+
+```
+
+Plotando o valor absoluto da correlação:
+
+```{r}
+
+barplot(cor_mat[, 'EN.ATM.CO2E.KT'] %>% abs %>% sort(decreasing=T))
+
+```
+
+Não é, a princípio, necessário saber o nome de cada uma das variáveis representadas por cada uma das barras. O que sabemos, por hora, é que a correlação varia praticamente de forma contínua e todo tipo de correlação ocorre no grande conjunto de dados que temos disponíveis.
+
+Assim, na próxima seção, iremos tentar agrupar as variáveis em grupos correlacionados no intuito de:
+
+*Explicar quais variáveis possuem relacionamentos mútuos
+*Utilizar tais relacionamentos para criar um modelo explicado por um menor número de variáveis explicativas.
+
+É possível que não faça muito sentido acoplar algumas variáveis ao modelo que estamos buscando construir. Queremos prever a emissão de CO² e, assim, não faz muito sentido acoplar no modelo a emissão de CO² em outra unidade por exemplo. O agrupamento que realizaremos na próxima seção também ajuda a esclarecer esse ponto do problema.
+
+## 3.3. Agrupamento de Variáveis Correlacionadas
+
+As técnicas de aprendizado não supervisionado consistem na categorização de variáveis por meio de algoritmos de Cluster. Esse tipo de procedimento pode ser aplicado no agrupamento de variáveis fortemente correlacionadas.
+
+Para isso, podemos imaginar que quanto mais correlacionadas duas variáveis forem, mais próximas elas estarão no hiperespaço de variáveis explicativas. Ou seja: podemos adotar uma métrica $\mathcal{F}(Cor(X, Y)) = \mathcal{D}(X, Y)$ que corresponde à distância entre os vetores $X$ e $Y$.
+
+Essa métrica é tal que, quanto mais correlacionadas forem as variáveis, menor será a distância entre elas, de tal forma que variáveis $100\%$ correlacionadas serão separadas por uma distância igual a zero.
+
+Além disso, a correlação será avaliada em valor absoluto neste ponto. Isso ocorre porque variáveis com correlações próximas a $-1$ também podem ser consideradas extremamente próximas, ainda que as variações de cada uma delas ocorram com sinais trocados.
+
+Definiremos a função em questão como:
+$\mathcal{F}(Cor(X, Y)) = \mathcal{D}(X, Y) = 1 - |Cor(X, Y)|$.
+
+A correlação entre cada par de variáveis formará uma matriz de ordem $N \times N$, onde $N$ é a quantidade de variáveis presentes na base de dados (em torno de 200 variáveis).
+
+Assim, essa matriz terá a forma: 
+$\mathcal{D}_K(X_i, X_j) = 1 - |Cor(X_i, X_j)| = (d)_{ij} = D_{N \times N}$
+
+A título de ilustração, demonstramos abaixo um grafo na qual o usuário pode selecionar um valor limiar de correlação $L$ e todo par de nós com correlação maior ou igual a $L$ será ligado por um argo.
+
+Diferentes valores de correlação geram diferentes padrões de agrupamento e existe um trade-off: quanto maior $L$, maior é o rigor no agrupamento mas menos grupos são formados. Por outro lado, valores mais baixos de limiar de correlação permite que grupos maiores sejam formados e que o modelo que projetaremos seja mais sintético.
+
+```{r}
+
+shinyApp(
+  ui = fluidPage(
+    fluidRow(
+      column(4, sliderInput('limiar_dec', 'Correlação Mínima - Decimal:',
+                0, 1, 0.9, 0.1)),
+      column(4, sliderInput('limiar_cen', 'Correlação Mínima - Centenas:',
+                0, 0.1, 0.05, 0.001))
+    ),
+    fluidRow(
+      plotOutput('grafo_cluster')
+    )
+  ),
+
+  server = function(input, output) {
+    output$grafo_cluster = renderPlot({
+      cor_mat[upper.tri(cor_mat, diag=T)] <- -1
+      adj_list <- melt(cor_mat) %>% filter(value >= input$limiar_dec + input$limiar_cen)
+      names(adj_list) <- c('From', 'To', 'Weight')
+      net <- graph.data.frame(adj_list, directed=F)
+      par(mar=rep(2, 4))
+      plot(net, layout = layout_components(net), vertex.label=NA,
+           vertex.size=1)
+    })
+  }
+)
+    
+```
+
+Os pontos serão agrupados por meio da técnica de clusterização hierárquica, considerando-se a matriz de distância definida acima: $\mathcal{F_K}(Cor(X, Y)) = \mathcal{D}(X, Y) = 1 - |Cor(X, Y)|$.
+
+A clusterização hierárquica não pede que o usuário determine o número de clusters desejado. Ao contrário, o usuário pode visualizar um dendograma com diferentes níveis de agrupamento e escolher aquele que melhor se aplica à necessidade do problema:
+
+```{r}
+
+
+hclust_obj <- (1 - abs(cor_mat)) %>% as.dist %>% hclust
+dend <- hclust_obj %>% as.dendrogram
+
+dend %>% set('labels_cex', 0.1) %>% plot
+
+```
+
+Precisamos escolher uma altura na qual a árvore será cortada. Para facilitar essa análise, plotemos o número de clusters em função da altura de corte:
+
+```{r}
+
+height <- seq(from=0, to=1, by=0.001)
+n_clusters <- sapply(height, function(X)(cutree(dend, h=X) %>% unique %>% length))
+df_hclust <- data.frame(Height=height, N.Clusters=n_clusters)
+plot_ly(x=height, y=n_clusters, type='bar')
+
+```
+
+O gráfico plotado é reativo, podemos encostar o mouse sobre ele e verificar, manualmente, os valores de $X$ (altura) e $Y$ (número de clusters) para cada uma das barras. Podemos observar a existência de um platô quando a altura do algoritmo é igual a $0.2$. Nesse caso, deixamos de trabalhar com $200$ variáveis e passamos a operar com $40$ grupos diferentes.
+
+```{r}
+
+dend %>% set('labels_cex', 0.1) %>% color_branches(k=40) %>% plot
+
+```
+
+Iremos então acessar o nosso dicionário de metadados e atribuir a cada uma das variáveis o respectivo identificador do cluster.
+
+```{r}
+
+opt_cut <- cutree(dend, h=0.2)
+df_in_clusters <- data.frame('Indicator.Code'=names(opt_cut), 
+                             'Cluster.Index'=as.vector(opt_cut))
+
+df_in_clusters <- df_in_clusters %>% 
+  inner_join(df_in_meta, by=(c('Indicator.Code'='Indicator Code')))
+
+df_in_clusters %>% head
+write.csv(df_in_clusters, './Agrupamento_Variaveis.csv')
+
+```
+
+
+

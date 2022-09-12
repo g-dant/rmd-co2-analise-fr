@@ -1,0 +1,1050 @@
+---
+title: 'Estatística Avançada - Projeto Final - FGV'
+author: 'Grupo - França'
+date: 'Novembro de 2019'
+output:
+  html_document:
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+# Themes: “default”, “cerulean”, “journal”, “flatly”, “darkly”, “readable”, “spacelab”, “united”, “cosmo”, “lumen”, “paper”, “sandstone”, “simplex”, “yeti”
+knitr::opts_chunk$set(echo = TRUE)
+
+if(!require(nortest)) install.packages("nortest")
+if(!require(lmtest)) install.packages("lmtest")
+
+library(tidyverse)
+library(magrittr)
+library(readxl)
+library(DT)
+library(ggplot2)
+library(zoo)
+library(plotly)
+library(ggcorrplot)
+library(cluster)
+library(igraph)
+library(reshape2)
+library(ggraph)
+library(data.table)
+library(dendextend)
+library(gridExtra)
+library(phonTools)
+library(corrplot)
+library(nortest)
+library(lmtest)
+library(kableExtra)
+library(wordcloud)
+library(scales)
+
+print(getwd())
+
+```
+
+![CO2 Na França](https://cdn11.bigcommerce.com/s-2lbnjvmw4d/images/stencil/500x659/products/2924/3620/Franceflag300__03744.1567703988.gif?c=2&imbypass=on){width=50px}
+
+Grupo:
+
+* Daniel Mello Duarte Morais
+* David da Guia Carvalho
+* Elaine Maria Lopes Loureiro
+* Guilherme Vieira Dantas
+* Mallena Ferreira de Morais Costa
+
+# Índice {.tabset .tabset-pills}
+
+## Resumo
+
+No presente projeto, iremos, a partir de base de dados disponibilizada em aula, gerar um modelo linear para a previsão de CO2 em KT. Os resultados obtidos foram positivos e seguiram todos os requisitos necessários para a validade da regressão:
+
+* Um p-valor acima de $5\%$ para os testes de Anderson-Darling e Shapiro, o que indica normalidade em nossos resíduos, conforme o esperado.
+* Um p-valor também elevado no teste de Breusch-Pagan, o que nos permite aceitar a hipótese de Homocedasticidade ainda que a reta do gráfico Scale-Location não seja propriamente horizontal.
+* Um p-valor elevado para o teste de Durblin-Watson.
+* Tudo isso a um $R^2$ na ordem de $99\%$
+
+<center>
+
+![](https://upload.wikimedia.org/wikipedia/commons/2/26/Co2_carbon_dioxide_icon.png){width=150px}
+
+</center>
+
+O modelo foi desenvolvido, no âmbito de nosso grupo, para os dados relativos à França. Nas próximas seções, iremos descrever cada um dos passos realizados, desde a análise exploratória de dados até os resultados finais, em formato de storytelling.
+
+## 1. Primeiro Passo - Verificação de Dados
+
+Iremos iniciar o trabalho verificando os dados que temos para a realização da análise. Para isso, seguiremos a seguinte sequência de passos:
+
+* Verificar o arquivo de entrada
+* Conferir quais atributos possuem informações para todos os instantes de tempo da análise
+* Conferir quais atributos possuem informações parciais (missing data)
+* Conferir e eliminar atributos que não possuem informações ou possuem uma quantidade muito reduzida de dados, de forma a inviabilizar a análise
+
+```{r}
+
+setwd('~/Área de Trabalho/stu/MBA - FGV/Estatística Avançada/Trabalhos/Trabalho-Final')
+df_in <- read_excel('./FRA_Country_en_excel_v2.xls')
+df_in[, 1:3] %>% head
+
+```
+Os dados parecem extremamente desorganizados. Precisamos, primeiramente, eliminar as duas primeiras linhas e tornar a terceira linha o header do Data Frame:
+
+```{r}
+
+colnames(df_in) <- df_in[3,] %>% unlist
+df_in <- df_in[-c(1, 2, 3),]
+df_in[, 1:3] %>% head
+
+```
+
+Sabemos que o país é a França, então podemos eliminar o nome e o código do país. O nome do indicador será utilizado para se referir à variável e o nome do indicador será eliminado da tabela. Um segundo Data Frame relacionando os códigos dos indicadores aos nomes será criado e funcionará como uma tabela de metadados:
+
+```{r}
+
+df_in_meta <- df_in %>% select(`Indicator Name`, `Indicator Code`)
+df_in_meta %>% head
+
+```
+
+Eliminando os metadados e as informações redundantes de país da tabela de dados:
+
+```{r}
+
+df_in <- df_in %>% select(-`Country Name`, -`Country Code`, -`Indicator Name`)
+df_in[, 1:3] %>% head
+
+```
+
+Podemos notar que existem muitos indicadores com um altíssimo número de dados perdidos. Iremos então verificar em uma tabela a quantidade de dados perdidos por indicador, para descobrir quais indicadores não serão levados em consideração na análise:
+
+```{r}
+
+df_in$`N. Missing` <- apply(df_in, 1, function(x) (is.na(x) %>% sum))
+df_in$`Perc. Missing` <- df_in$`N. Missing` / (ncol(df_in) - 2)
+
+df_in_missing <- df_in %>% 
+  select(`Indicator Code`, `N. Missing`, `Perc. Missing`) %>% 
+  arrange(desc(`N. Missing`))
+
+```
+
+Escrevendo a a saída em uma tabela Shiny formatada e em um gráfico de barra com o percentual de dados perdidos:
+
+```{r}
+
+ggplot(data=df_in_missing, aes(x=`N. Missing`)) + 
+geom_histogram(color='darkgreen', fill='white') + theme_minimal() +
+  labs(x='Quantidade de dados perdidos',
+       y='Freq. Absoluta',
+       title='Missing Data',
+       subtitle='Analisando quantidade de dados perdidos por tipo de variável')
+
+df_in_missing
+
+```
+
+Se tomarmos um limiar igual a 5, admitiremos um valor de perda máximo de dados igual a a aproximadamente 10% e teremos no mínimo 50 pontos de amostra para gerar o modelo:
+
+```{r}
+
+ggplot(data=df_in_missing %>% filter(`N. Missing` <= 5), aes(x=`N. Missing`)) + 
+geom_histogram(color='darkgreen', fill='white') + theme_minimal() +
+  labs(x='Quantidade de dados perdidos',
+       y='Freq. Absoluta',
+       title='Missing Data',
+       subtitle='Filtrando gráfico anterior para regiões com menos de 6 dados perdidos')
+
+df_in_missing %>% filter(`N. Missing` <= 5)
+
+```
+
+De acordo com o histograma, ainda que tal critério rigoroso seja adotado, uma grande quantidade de indicadores continua disponível: reduzimos o escopo da análise de 1200 indicadores para 200 indicadores e, ainda assim, temos um grande volume de dados.
+
+Podemos, então, plotar conjuntamente os diagramas para verificar, de maneira superficial, o aspecto das curvas que serão submetidas a análise. Para facilitar tal tarefa, iremos transpor a tabela filtrada:
+
+```{r}
+
+df_in <- df_in %>% filter(`N. Missing` <= 5)
+data_matrix <- df_in[1:nrow(df_in), 2:(ncol(df_in) - 2)]
+df_in_t <- t(data_matrix) %>% as.data.frame
+colnames(df_in_t) <- df_in$`Indicator Code`
+df_in_t$Year <- colnames(df_in)[2:(ncol(df_in) - 2)]
+df_in_t[,1:3] %>% head
+
+```
+
+Iremos eliminar o ano de $2015$ da análise pois foi observado que a coluna de tal ano não possui nenhum valor para nenhuma variável.
+
+Plotando a evolução de cada uma das variáveis em função do tempo:
+
+```{r}
+
+df_in_p <- df_in_t %>% gather('Indicator', 'Value', -Year)
+df_in_p <- df_in_p %>% filter(Year != '2015')
+
+df_in_p <- df_in_p %>% transform(Year=as.numeric(Year)) %>% transform(Value=as.numeric(Value))
+ggplot(df_in_p, aes(x=Year, y=Value, color=Indicator)) + geom_line() + 
+  theme(legend.position='none', panel.background = element_blank(),
+        panel.grid.major = element_line(colour = 'gray'), 
+        panel.grid.minor = element_line(colour = 'gray')) +
+  labs(x='Ano',
+       y='Valor',
+       title='Evolução das Variáveis Escolhidas',
+       subtitle='Uma primeira análise das séries temporais')
+
+```
+
+Podemos observar que existem dados perdidos devidos aos "Warnings" recebidos. Na próxima seção iremos corrigir esse problema.
+
+## 2. Segundo Passo - Preenchimento de Missing Data
+
+A função "approx" da biblioteca zoo permite que realizemos interpolação linear para preencher os dados faltantes de cada uma das séries. Esse procedimento é mais coerente que simplesmente copiar os dados do passado ou do futuro para completar as células iguais a NA.
+
+Esse procedimento não considera os pontos extremos com valores iguais a NA, razão pela qual, após a interpolação, escrevemos uma rotina para preencher os valores extremos com o próximo valor nao nulo ou o valor não nulo imediatamente anterior.
+
+```{r}
+
+indicators_list <- colnames(df_in_t %>% select(-Year))
+for (curr_indicator in indicators_list) {
+  
+  curr_list <- df_in_t[curr_indicator]
+  curr_list <- na.approx(curr_list, na.rm = FALSE)
+  
+  non_NA_index <- which(!is.na(curr_list))
+  first_non_NA <- min(non_NA_index)
+  last_non_NA <- max(non_NA_index)
+  
+  if (first_non_NA > 1){
+    curr_list[1:(first_non_NA - 1)] = curr_list[first_non_NA]
+  }
+  if (last_non_NA < length(curr_list)) {
+    curr_list[(last_non_NA + 1):length(curr_list)] = curr_list[last_non_NA]
+  }
+  
+  df_in_t[curr_indicator] = curr_list
+}
+
+```
+
+Finalmente, podemos plotar novamente os gráficos:
+
+```{r}
+
+df_in_p <- df_in_t %>% gather('Indicator', 'Value', -Year)
+df_in_p[is.na(df_in_p)] <- 0
+
+df_in_p <- df_in_p %>% transform(Year=as.numeric(Year)) %>% transform(Value=as.numeric(Value))
+ggplotly(ggplot(df_in_p, aes(x=Year, y=Value, color=Indicator)) + geom_line() + 
+  theme(legend.position='none', panel.background = element_blank(),
+        panel.grid.major = element_line(colour = 'gray'), 
+        panel.grid.minor = element_line(colour = 'gray')) +
+  labs(x='Ano (Variáveis reativas: encostar mouse para verificar)',
+       y='Valor',
+       title='Variáveis Corrigidas'))
+
+```
+
+Não há alterações visíveis pois os dados perdidos se concentraram majoritariamente em posições extremas das seŕies. Em todo caso, os warnings de dados faltantes não se encontram mais presentes e podemos prosseguir para a próxima etapa: analisar a correlação e o relacionamento entre as variáveis.
+
+## 3. Terceiro Passo - Análise de Correlação
+
+* Em um primeiro momento, estudaremos os relacionamentos mútuos entre cada par de variáveis que podemos tomar.
+* Em seguida, iremos verificar as correlações de cada uma das variáveis com a variável que iremos estudar (a emissão de CO²).
+* Finalmente, com essas informaçoes, iremos organizar e categorizar grupos de variáveis que estão fortemente correlacionadas utilizando técnicas de clusterização.
+
+### Etapas da Análise de Correlação:
+
+#### 3.1. Correlações Mútuas entre Variáveis
+
+Podemos plotar a correlação entre as variáveis em um mapa de calor. É inviável escrever o nome de cada uma das variáveis na matriz, entretanto, podemos, ao menos, observar o aspecto de tal mapa.
+
+```{r}
+
+cor_mat <- df_in_t %>% select(-Year) %>% cor
+ggcorrplot(cor_mat, tl.cex=0) +
+  labs(title='Matriz de correlação como Mapa de Calor',
+       subtitle='Identificando se há multicolinearidade')
+
+```
+
+Aparentemente, os grupos de variáveis são fortemente relacionados entre si. Isso indica que podemos agrupar as variáveis em um número muito mais compacto de categorias sem que isso signifique prejuízo em nossa análise.
+
+Vejamos a correlação entre cada uma das variáveis com o dado em estudo na próxima subseção.
+
+#### 3.2. Correlações com Emissão de CO²
+
+Antes de agruparmos as variáveis em categorias correlacionadas, vamos dar um "Zoom" na análise da seção anterior e nos ater à variável em estudo. Trata-se da emissão de CO² em KT, representada pela variável EN.ATM.CO2E.KT.
+
+Podemos visualizar as correlações de cada uma das demais variáveis por meio de um gráfico de barra.
+
+```{r}
+
+x_plot <- rownames(cor_mat)
+y_plot <- cor_mat[, 'EN.ATM.CO2E.KT']
+df_plot <- data.frame(X=x_plot, Y=y_plot)
+
+ggplotly(ggplot(data=df_plot, aes(x=reorder(x_plot, -abs(y_plot)), y=abs(y_plot))) +
+  geom_bar(stat='identity', color='darkgreen', fill='white') + 
+  theme_minimal() + theme(axis.text.x=element_blank()) +
+  labs(x='Nome da Variável (Gráfico reativo: encostar o mouse para verificar)', 
+       y='Correlação com Emissão de CO2 (KT)',
+       title='Correlações com Variável Alvo'))
+
+```
+
+Plotando o valor absoluto da correlação:
+
+```{r}
+
+ggplotly(ggplot(data=df_plot, aes(x=reorder(x_plot, -abs(y_plot)), y=abs(y_plot))) +
+  geom_bar(stat='identity', color='darkgreen', fill='white') + 
+  theme_minimal() + theme(axis.text.x=element_blank()) +
+  labs(x='Nome da Variável (Gráfico reativo: encostar o mouse para verificar)', 
+       y='Correlação com Emissão de CO2 (KT)',
+       title='Correlações com Variável Alvo'))
+
+```
+
+Não é, a princípio, necessário saber o nome de cada uma das variáveis representadas por cada uma das barras. O que sabemos, por hora, é que a correlação varia praticamente de forma contínua e todo tipo de correlação ocorre no grande conjunto de dados que temos disponíveis.
+
+Assim, na próxima seção, iremos tentar agrupar as variáveis em grupos correlacionados no intuito de:
+
+* Explicar quais variáveis possuem relacionamentos mútuos
+* Utilizar tais relacionamentos para criar um modelo explicado por um menor número de variáveis explicativas.
+
+Antes de efetuarmos o agrupamento, vamos retirar de nossa tabela a variável que queremos explicar>
+
+```{r}
+
+df_out <- df_in_t[, 'EN.ATM.CO2E.KT']
+df_in_t <- df_in_t %>% select(-EN.ATM.CO2E.KT)
+
+```
+
+#### 3.3. Agrupamento de Variáveis Correlacionadas
+
+As técnicas de aprendizado não supervisionado consistem na categorização de variáveis por meio de algoritmos de Cluster. Esse tipo de procedimento pode ser aplicado no agrupamento de variáveis fortemente correlacionadas.
+
+Para isso, podemos imaginar que quanto mais correlacionadas duas variáveis forem, mais próximas elas estarão no hiperespaço de variáveis explicativas. Ou seja: podemos adotar uma métrica $\mathcal{F}(Cor(X, Y)) = \mathcal{D}(X, Y)$ que corresponde à distância entre os vetores $X$ e $Y$.
+
+Essa métrica é tal que, quanto mais correlacionadas forem as variáveis, menor será a distância entre elas, de tal forma que variáveis $100\%$ correlacionadas serão separadas por uma distância igual a zero.
+
+Além disso, a correlação será avaliada em valor absoluto neste ponto. Isso ocorre porque variáveis com correlações próximas a $-1$ também podem ser consideradas extremamente próximas, ainda que as variações de cada uma delas ocorram com sinais trocados.
+
+Definiremos a função em questão como:
+$\mathcal{F}(Cor(X, Y)) = \mathcal{D}(X, Y) = 1 - |Cor(X, Y)|$.
+
+A correlação entre cada par de variáveis formará uma matriz de ordem $N \times N$, onde $N$ é a quantidade de variáveis presentes na base de dados (em torno de 200 variáveis).
+
+Assim, essa matriz terá a forma: 
+$\mathcal{D}_K(X_i, X_j) = 1 - |Cor(X_i, X_j)| = (d)_{ij} = D_{N \times N}$
+
+Os pontos serão agrupados por meio da técnica de clusterização hierárquica, considerando-se a matriz de distância definida acima: $\mathcal{F_K}(Cor(X, Y)) = \mathcal{D}(X, Y) = 1 - |Cor(X, Y)|$.
+
+A clusterização hierárquica não pede que o usuário determine o número de clusters desejado. Ao contrário, o usuário pode visualizar um dendograma com diferentes níveis de agrupamento e escolher aquele que melhor se aplica à necessidade do problema:
+
+```{r}
+
+
+hclust_obj <- (1 - abs(cor_mat)) %>% as.dist %>% hclust
+dend <- hclust_obj %>% as.dendrogram
+dend %>% dendextend::set('labels_color', 'white') %>% plot(xaxt='n')
+
+```
+
+Precisamos escolher uma altura na qual a árvore será cortada. Para facilitar essa análise, plotemos o número de clusters em função da altura de corte:
+
+```{r}
+
+height <- seq(from=0, to=1, by=0.001)
+n_clusters <- sapply(height, function(X)(cutree(dend, h=X) %>% unique %>% length))
+df_hclust <- data.frame(Height=height, N.Clusters=n_clusters)
+ggplotly(ggplot(df_hclust, aes(x=Height, y=N.Clusters)) + theme_minimal() +
+           geom_line(stat='identity', color='darkgreen'))
+
+```
+
+O gráfico plotado é reativo, podemos encostar o mouse sobre ele e verificar, manualmente, os valores de $X$ (altura) e $Y$ (número de clusters) para cada uma das barras. Podemos observar a existência de um platô quando a altura do algoritmo é igual a $0.2$. Nesse caso, deixamos de trabalhar com $200$ variáveis e passamos a operar com $40$ grupos diferentes.
+
+Iremos então acessar o nosso dicionário de metadados e atribuir a cada uma das variáveis o respectivo identificador do cluster.
+
+```{r}
+
+opt_cut <- cutree(dend, h=0.2)
+df_in_clusters <- data.frame('Indicator.Code'=names(opt_cut), 
+                             'Cluster.Index'=as.vector(opt_cut))
+
+df_in_clusters <- df_in_clusters %>% 
+  inner_join(df_in_meta, by=(c('Indicator.Code'='Indicator Code')))
+
+df_in_clusters %>% head
+write.csv(df_in_clusters, './Agrupamento_Variaveis.csv')
+
+```
+
+Finalmente, podemos observar o arquivo de saída e:
+* Descrever cada um dos grupos
+* Interpretar e caracterizar cada cluster
+* Identificar potenciais correlações espúrias
+
+Isso será feito na próxima seção.
+
+#### 3.4. Interpretação dos Clusters e Identificação de Correlações Espúrias
+
+Uma tabela caracterizando cada um dos clusteres foi criada. Ela será impressa nesta seção para consulta e comparação com as análises que serão feitas daqui em diante. As descrições foram feitas relacionando-se cada grupo de variáveis dentro de um mesmo cluster e interpretando o que cada agrupamento representa.
+
+```{r}
+
+df_grupos <- read_excel('./GRUPOS.xlsx')
+df_grupos
+
+```
+
+#### 3.5. Avaliação da Qualidade dos Clusters
+
+Podemos avaliar a qualidade dos clusters verificando a distribuição das correlações para agrupamento. Queremos grupos com distribuições de correlações o mais próximas de $100\%$ que for possível.
+
+```{r}
+
+get_corr_distrib <- function(cluster_index) {
+  
+  cluster_table <- df_in_clusters %>% filter(Cluster.Index == cluster_index)
+  vars_list <- cluster_table[['Indicator.Code']]
+  n_cluster_vars <- length(vars_list)
+  
+  if (n_cluster_vars == 1) {
+    return(NA)
+  }
+  
+  corr_vec <- c()
+  for (i in 2:n_cluster_vars) {
+    for (j in 1:(i - 1)) {
+      corr_vec <- c(corr_vec, cor_mat[vars_list[[i]], vars_list[[j]]] %>% abs)
+    }
+  }
+  return(corr_vec)
+}
+
+corr_vec <- c()
+cluster_vec <- c()
+
+for (k in (df_in_clusters[['Cluster.Index']] %>% unique)) {
+  new_rows <- get_corr_distrib(k)
+  corr_vec <- c(corr_vec, new_rows)
+  cluster_vec <- c(cluster_vec, rep(k %>% as.character, times=new_rows %>% length))
+}
+
+df_corr_per_cluster <- data.frame(Correlation=corr_vec, Cluster.Index=cluster_vec) %>%
+  mutate(Cluster.Index=as.numeric(Cluster.Index)) %>%
+  inner_join(df_grupos, by=c('Cluster.Index'='Cluster.Index'))
+
+ggplot(df_corr_per_cluster) + 
+  geom_density(aes(x=Correlation, fill=Cluster.Cod), alpha=.1) +
+  scale_x_continuous(limits=c(.7, 1)) + theme_minimal() +
+  labs(x='Correlação', y='Densidade por Cluster',
+       title='Distribuição da correlação',
+       subtitle='Por pares de variáveis dentro de um mesmo grupo / por grupo')
+
+```
+
+Podemos ainda plotar a distribuição global, sem segregação por cluster:
+
+```{r}
+
+ggplot(df_corr_per_cluster, aes(x=Correlation)) + geom_density() +
+  scale_x_continuous(limits=c(.7, 1)) + theme_minimal() +
+  labs(x='Correlação (Variáveis em um mesmo cluster)', y='Densidade',
+       title='Distribuição da correlação',
+       subtitle='Por pares de variáveis dentro de um mesmo grupo / geral')
+
+```
+
+Podemos então observar que, além de reduzir o número de variáveis de $200$ para $32$, garantimos que dentro de um cluster teremos correlações iguais a, no mínimo, $70\%$.  Assim, podemos prosseguir nossa análise, focando apenas em variáveis agregadas por grupos. A agregação será realizada em duas etapas:
+
+* Variáveis com correlação maior ou igual a $99\%$ podem ser consideradas como sendo a mesma variável. Assim, iremos em uma primeira etapa retirar a média de grupos de variáveis com tal correlação fortíssima.
+
+* Em seguida, agruparemos o cluster realizando, também, uma média aritimética. Nesta etapa, os erros gerados por cada variável também serão submetidos a tal média e isso contribui na normalização do erro (pela lei do limite central), na redução da variância do erro (pois o desvio padrão se reduz em um fator igual a $\sqrt{N_{Cluster}}$) e na eliminação do problema da multicolinearidade sem eliminarmos qualquer variável da análise.
+
+* O agrupamento por média deverá ser efetuado sobre as variáveis normalizadas, para que o efeito da média não seja comparado a uma média ponderada na qual variáveis com unidades de maiores ordens de grandeza prevalecem.
+
+```{r}
+
+df_in_p_sd <- df_in_p
+df_in_p_sd <- df_in_p_sd %>%
+  group_by(Indicator) %>%
+  summarise_at(vars(Value), sd) %>%
+  rename(Sd = Value) %>%
+  as.data.frame
+
+df_in_p_mean <- df_in_p
+df_in_p_mean <- df_in_p_mean %>%
+  group_by(Indicator) %>%
+  summarise_at(vars(Value), mean) %>%
+  rename(Mean = Value) %>%
+  as.data.frame
+
+df_in_p_grupos <- df_in_p %>%
+  mutate(Indicator = as.character(Indicator)) %>%
+  inner_join(df_in_p_sd, by=c('Indicator'='Indicator')) %>%
+  inner_join(df_in_p_mean, by=c('Indicator' = 'Indicator')) %>%
+  mutate(Value = (Value - Mean) / Sd) %>%
+  inner_join(df_in_clusters, by=c('Indicator' = 'Indicator.Code')) %>%
+  mutate(Cluster.Index = as.numeric(Cluster.Index)) %>%
+  inner_join(df_grupos, by=c('Cluster.Index' = 'Cluster.Index')) %>%
+  select('Cluster.Index', 'Cluster.Cod', 'Cluster.Description', 'Year', 'Value') %>%
+  group_by(Cluster.Cod, Year) %>%
+  summarise_at(vars(Value), mean) %>%
+  as.data.frame
+
+df_in_p_grupos %>% head
+
+```
+
+Há correlação entre grupos de um mesmo cluster? É necessário fazer essa verificação final para conferir se o problema da multicolinearidade pode ocorrer ainda. Iniciemos plotando a evolução do valor médio encontrado em cada um dos clusters:
+
+```{r}
+
+clusters_list <- df_in_p_grupos[['Cluster.Cod']] %>% unique
+
+```
+
+##### Gráficos das Variáveis {.tabset .tabset-pills}
+
+###### Variáveis 1 a 6
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[1:6]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 1 a 6')
+
+```
+
+###### Variáveis 7 a 12
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[7:12]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 7 a 12')
+
+```
+
+###### Variáveis 13 a 18
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[13:18]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 13 a 18')
+
+```
+
+
+###### Variáveis 19 a 24
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[19:24]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 19 a 24')
+
+```
+
+###### Variáveis 25 a 30
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[25:30]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 25 a 30')
+
+```
+
+
+###### Variáveis 31 a 36
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[31:36]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 31 a 36')
+
+```
+
+###### Variáveis 37 a 39
+```{r}
+
+ggplot(df_in_p_grupos %>% filter(Cluster.Cod %in% clusters_list[37:39]), aes(x=Year, y=Value, color=Cluster.Cod)) + geom_line() + theme_minimal() +
+  labs(x='Ano', y ='Valor', title='Evolução temporal das variáveis',
+       subtitle='Variáveis 37 a 39')
+
+```
+
+##### Verificação de Correlograma
+
+Para nos certificarmos de maneira exata, verifiquemos o correlograma. Para isso, precisaremos retirar a tabela utilizada nos gráficos anteriores da forma de pivô.
+
+```{r}
+
+
+
+list_years <- df_in_p_grupos[['Year']] %>% unique
+list_clusters <- df_in_p_grupos[['Cluster.Cod']] %>% unique
+
+nrows_mat <- length(list_years)
+ncols_mat <- length(list_clusters)
+
+df_in_t_grupos <- zeros(nrows_mat, ncols_mat)
+
+rownames(df_in_t_grupos) <- list_years
+colnames(df_in_t_grupos) <- list_clusters
+
+for (curr_year in list_years) {
+  for (curr_cluster in list_clusters) {
+    df_in_t_grupos[[curr_year %>% as.character, curr_cluster]] <-
+      (df_in_p_grupos %>% 
+       filter(Year == curr_year &
+              Cluster.Cod == curr_cluster))$Value[[1]]
+  }
+}
+
+df_in_t_grupos <- df_in_t_grupos %>% as.data.frame
+mat_cor_grupos <- cor(df_in_t_grupos) %>% abs
+
+mask <- zeros(ncols_mat) > 0
+for (i in 1:ncols_mat) {
+  mat_cor_grupos[[i, i]] <- 0
+  mask[[i]] <- (any(abs(mat_cor_grupos[i,]) > 0.78))
+  mat_cor_grupos[[i, i]] <- 1
+}
+
+mat_cor_grupos[mask, mask] %>% corrplot
+
+```
+
+Ainda temos um grande problema de multicolinearidade entre os clusters. Para resolvermos isso, podemos recorrer à técnica da análise de componentes principais.
+
+#### 3.6. Solução da Multicolinearidade entre Clusters: Análise de Componentes Principais (PCA)
+
+Poderíamos, desde o início, ter realizado essa técnica, sem o intermédio de qualquer algoritmo de clusterização. No entanto, analisar a influência de um número reduzido de clusters em cada um dos componentes principais é mais fácil e garante uma maior interpretabilidade ao modelo.
+
+```{r}
+
+pr_comp <- prcomp(df_in_t_grupos)
+list_var <- (pr_comp$sdev ** 2) / (sum(pr_comp$sdev ** 2))
+list_cum <- cumsum(list_var)
+df_pr <- data.frame(Perc.Var=list_var,
+                    Cum.Perc=list_cum,
+                    PC.Index=1:length(list_var))
+
+ggplot(df_pr, aes(x=PC.Index)) + 
+  geom_bar(aes(y=Perc.Var), stat='identity', color='darkgreen', fill='white') + 
+  geom_line(aes(y=Cum.Perc)) + 
+  scale_x_continuous(breaks = seq(0, 40, len=10)) +
+  theme_minimal() +
+  labs(x='Índice da Componente Principal',
+       y='Percentual de Importância da Componente',
+       title='Gráfico de Pareto: Componentes Principais',
+       subtitle='Importância relativa (barras) e importância cumulativa (linha)')
+
+pr_comp %>% summary
+
+```
+
+Podemos observar que grande parte das variações nas séries pode ser explicada por um pequeno número de componentes principais (conseguimos explicar 95% das variações a partir de 12 componentes). Assim, esperamos que, na etapa de modelagem, consigamos criar um modelo com poucas variáveis explicativas e buscaremos eliminá-las a partir de duas etapas:
+
+* Por meio da função STEP, que buscará eliminar coeficientes de forma a reduzir o parâmetro AIC (Akaike Information Criterion)
+* Em seguida, verificaremos quais coeficientes na saída são pouco significantes e possuem altos valores-P nos testes de Student.
+
+Em cada instante de tempo, o vetor $\mathcal{C} = (C_1, C_2,..., C_{39})$ formado pelos clusteres será multiplicado pela matriz de rotação encontrada na análise de componentes principais e, assim, encontraremos novas séries temporais sobre as quais serão efetuadas as análises de regressão.
+
+Aplicando a transformação em nossa matriz de clusters, obtemos o termo "x" da saída da função prcomp.
+
+```{r}
+
+df_pca <- pr_comp$x %>% as.data.frame
+df_pca$Y <- df_out
+
+```
+
+
+Finalmente, podemos iniciar a modelagem do regressor linear.
+
+## 4. Aplicação e Análise do Modelo de Regressão
+
+### 4.1. Encontrando Modelo Adequado
+
+Ajustando o modelo, nas componentes principais:
+
+```{r}
+
+mod = lm(Y~., data=df_pca)
+summary(mod)
+
+```
+
+Observamos que para diversas variáveis não podemos rejeitar a hipótese $\mathcal{H}_0$ de nulidade do coeficiente. Assim, iremos tentar resolver o problema eliminando as variáveis em sequência adequada a aumentar a verossimilhança do modelo por meio da função "step", utilizando-se o parâmetro "direction = backward":
+
+```{r}
+
+mod_ajustado <- step(mod, direction = 'backward')
+summary(mod_ajustado)
+
+```
+
+Encontramos um modelo com apenas $36$ variáveis, grande parte delas é significante e apenas uma eliminação foi realizada. O coeficiente $R^2$ é altíssimo, na ordem de $99%$, indicando, a princípio, que uma grande parcela da variação quadrática total pode, de fato, ser explicada pelo modelo.
+
+Porém, para termos uma noção geral dos resultados, precisamos olhar mais detalhadamente os resíduos.
+
+### 4.2. Pré-Análise de Resíduos
+
+Observemos os resíduos do modelo ajustado:
+
+```{r}
+
+par(mfrow=c(2, 2))
+mod_ajustado %>% aov %>% plot
+
+```
+
+* A curva de resíduos e desvios-padrões por valores ajustados não demonstra nenhum padrão, o que indica normalidade e ausência de autocorrelação.
+* A curva quantil-quantil gaussiana forma um padrão de reta de $45$ graus, o que se encontra de acordo com a literatura em amostras de erros que seguem distribuições normais
+* A última curva, demonstra a inexistência de outliers significativos (que possuam elevadas distâncias de Cook). Assim, a retirada individual de cada ponto da amostra não pode interferir significativamente no modelo já encontrado.
+
+#### Testes efetuados 
+
+```{r}
+
+anares <- resid(mod_ajustado)
+ad.test(anares)
+shapiro.test(anares)
+
+```
+
+Os p-valores são muito maiores que $0.05$ (tanto para o teste de Anderson-Darling quanto para o teste de Shapiro-Wilk) e, assim, podemos adotar a hipótese de normalidade. Testando a homocedasticidade por meio do teste de Breusch-Pagan
+
+```{r}
+
+bptest(mod_ajustado)
+
+```
+
+O elevado P-Valor não nos permite rejeitar a hipótese de homocedasticidade. Finalmente, testemos a autocorrelação por meio de um teste de Durblin-Watson:
+
+```{r}
+
+dwtest(mod_ajustado)
+
+```
+
+Como o p-valor é maior que $5 \%$. Assim, temos todas as hipóteses necessárias para uma boa regressão linear (já sabemos que não há multicolinearidade pois realizamos decomposição por componentes principais na transformação dos dados).
+
+Nosso modelo cumpre os requisitos de uma boa regressão linear e podemos, agora, interpretar os resultados. Porém, para isso, precisamos verificar a influência de cada um dos clusters sobre cada um dos componentes principais. Isso será realizado na próxima seção.
+
+## 5. Interpretando o Modelo
+
+Para interpretarmos o modelo, iremos, primeiramente, relembrar a sequência de passos adotada até aqui:
+
+1. Inspeção das variáveis
+2. Agrupamento das variáveis em clusteres
+3. Criação de novas variáveis: cada cluster é transformado em uma única variável, representada pela média dos membros do agrupamento, cada um deles é normalizado (dividido pelo desvio-padrão) antes da operação.
+4. Transformação das variáveis utilizando análise de componentes principais (PCA) para eliminar o problema de multicolinearidade entre os clusters.
+5. Aplicação do modelo linear
+
+Assim, cada componente principal será explicado, em diferentes graus e percentuais, por diferentes clusters:
+
+```{r}
+
+pr_comp_contrib <- pr_comp$rotation ** 2 %>% 
+  apply(MARGIN=1, FUN=function(X) (X / sum(X))) %>% t %>% as.data.frame
+
+pr_comp_contrib <- rownames_to_column(pr_comp_contrib, var='Cluster.Name')
+
+```
+
+Iremos demonstrar as contribuições para os valores principais mais significativos do modelo final:
+
+```{r}
+
+summary(mod_ajustado)
+
+```
+
+São as componentes: PC1, PC3 e PC4, que possuem significância abaixo de $0.1\%$ no teste de Student. Plotando as contribuições:
+
+```{r}
+
+pr_comp_contrib_p <- pr_comp_contrib %>% 
+  gather(key='Component', value='Contrib', -Cluster.Name) %>%
+  arrange(desc(Contrib))
+
+plot.Radar <- function(component_name) {
+  
+  options(warn=-1)
+  df_to_plot <- pr_comp_contrib_p %>% filter(Component %in% c(component_name))
+  
+  max_prob <- max(df_to_plot$Contrib)
+  size_x <- length(df_to_plot$Cluster.Name %>% unique)
+  seq_angle <- 360/(2*pi) * rev(pi/2 + seq(pi/size_x, 
+                                           2*pi - pi/14, 
+                                           len = size_x))
+  
+  (ggplot(data=df_to_plot, aes(x=reorder(Cluster.Name, -Contrib), 
+                               y=Contrib, group=Component,
+                              fill=Contrib)) + 
+  geom_point(size=1) + 
+  geom_bar(stat='identity') + 
+  ggtitle('Análise de Componentes Principais' %>% paste(component_name, sep=': '))  + 
+  geom_hline(aes(yintercept=0), lwd=1, lty=2) + 
+  scale_y_continuous(limits=c(0, 1.35*max_prob)) + 
+  coord_polar() +
+  theme_minimal() +
+  theme(axis.ticks =element_blank(), 
+        axis.text.y =element_blank(), 
+        axis.title=element_blank(), 
+        axis.text.x=element_text(size = 6, angle=seq_angle))) %>%
+    return
+}
+
+```
+
+#### Composição das Componentes Principais  Mais Significativas {.tabset .tabset-pills}
+
+
+##### Componente 1
+```{r}
+
+plot.Radar('PC1')
+
+```
+
+##### Componente 3
+```{r}
+
+plot.Radar('PC3')
+
+```
+
+##### Componente 4
+```{r}
+
+plot.Radar('PC4')
+
+```
+
+#### Interpretação
+
+Interpretando-se as componentes principais, obtemos:
+
+* A componente principal mais importante é PC1 (maior percentual de variância) possui participações de todas as variáveis mas possui como variáveis mais influentes os clusters: (1) EXIMBEMS (Exportação de Mercadorias, Bens e Serviços), (2) IMPODCEX (Mercadorias Importadas e Alimentos Exportados) e (3) CO2ELAQP (Emissão de CO2 para produção de eletricidade e produção).
+* A segunda componente principal analisada, PC3, possui duas variáveis relevantes em sua composição: EXPARMS e CRESPRF, que são, respectivamente, exportação de armas e crescimento populacional em razão da fertilidade.
+* A terceira componente principal analisada, PC4, possui como $3$ variáveis mais relevantes, a Exportação de Bens, Mercadorias e Serviços (EXPBEMS - sem contar com a importação, como no caso da primeira componente), IMPBEMS - a importação de bens, mercadorias e serviços e MIMPOR - Mercadorias Importadas para o Desenvolvimento da América Latina.
+
+Podemos então notar que o comércio internacional possui grande peso na determinação da emissão de CO2 pela França e, em expecial, o comércio de bens importados da América Latina.
+
+Além disso, observamos uma participação relevante da produção de energia e da indústria bélica em tal variável. Logicamente, todos esses fatores estão correlacionados e representam faces diferentes de tal problema ambiental.
+
+## 6. Interpretando com Wordclouds
+
+A análise das componentes principais na seção anterior nos forneceu alguns insights mas ainda não pareceu ser o suficiente para interpretarmos todas as variáveis explicativas (que são muitas) simultaneamente.
+
+Por isso, propomos um método alternativo para mapear as variáveis relevantes do modelo: iremos gerar um wordcloud com as palavras com maior peso na determinação da saída (emissão de CO2 em KT).
+
+Iremos criar um dataframe relacionando cada palavra contida na descrição das variáveis ao peso de tal variável na determinação da variável explicada. E como determinaremos tal peso?
+
+Iremos utilizar a regra da cadeia para calcular a sensibilidade de cada variável na saída.
+
+* Se $Y$ é a saída do modelo
+* $X_k$ é alguma variável de entrada do modelo (componente principal), representado pelo coeficiente $A_k$ então:
+
+$X_k = \sum_{i=0}^{i=N_{Clusters}} P_i.C_i$ e
+
+$C_k = \frac{\sum_{i=0}^{i=N_{NV_k}} V_{k,i}}{NV_k}$
+
+Onde:
+
+* $N_{Clusters}$ é o número de clusters utilizado
+* $P_i$ é o peso em $\%$ da variância do clusters $i$ na variável $X_k$
+* $C_k$ é o valor do agrupamento por média do cluster $k$, que possui $NV_k$ variáveis e 
+* $V_{k,i}$ é o valor da $i$-ésima variável do cluster $k$
+
+Nesse caso temos:
+
+$\frac{\partial Y}{\partial V_{k, i}} = \frac{A_k \times P_i}{NV_k}$
+
+E esse será o peso de cada uma das variáveis, que será somado ao peso de cada uma das palavras contidas dentro da descrição da variável.
+
+Com esses dados, iremos dispor os gráficos em uma nuvem de palavras (iremos utilizar apenas variáveis com p-valor abaixo de $5 \%$ nessa análise).
+
+```{r}
+
+concat_descript <- paste(df_in_meta$`Indicator Name`, collapse=' ') %>% toupper()
+concat_descript <- gsub('[^[:alnum:] ]', '', concat_descript)
+
+words_vec <- strsplit(concat_descript, split=' ') %>% unlist() %>% unique()
+words_weight_vec <- zeros(length(words_vec)) %>% as.vector()
+df_wordcloud <- data.frame(Word=words_vec,
+                           Weight=words_weight_vec,
+                           stringsAsFactors=F)
+
+pc_names <- summary(mod_ajustado)$coefficients %>% rownames()
+df_coef_sig <- summary(mod_ajustado)$coefficients %>% as.data.frame()
+df_coef_sig$PC <- pc_names
+df_coef_sig <- df_coef_sig %>% filter(`Pr(>|t|)` <= 0.05)
+
+df_in_meta_grupos <- df_in_clusters %>% 
+  inner_join(df_grupos, by=c('Cluster.Index'='Cluster.Index')) %>%
+  inner_join(df_in_meta, by=c('Indicator.Code'='Indicator Code'))
+
+for (var_X in df_coef_sig$PC[-1]) {
+  var_A <- mod_ajustado$coefficients[[var_X]]
+  for (var_V in pr_comp$rotation[, var_X] %>% names()) {
+    
+    weight_V <- pr_comp$rotation[[var_V, var_X]] * var_A
+    
+    V_description <- (df_in_meta_grupos %>% 
+                        filter(Cluster.Cod==var_V) %>% 
+                        as.data.frame())$`Indicator Name.x`[[1]]
+    
+    V_description <- gsub('[^[:alnum:] ]', '', V_description)
+    
+    V_description_words <- V_description %>% toupper() %>% strsplit(split = ' ')
+    
+    for (word_from_V in V_description_words %>% unlist) {
+      curr_val <- (df_wordcloud %>% filter(Word == word_from_V))$Weight[[1]]
+      setDT(df_wordcloud)[Word == word_from_V, Weight := curr_val + weight_V]
+    }
+  }
+}
+
+```
+
+```{r}
+
+ignore_list <- c('', 'OF', 'PER', 'ANNUAL', 'NET', 
+                 'AND', 'OF', 'LCU', 'FROM', 'CONSTANT',
+                 'TERMS', 'ADJUSTMENT', 'ON', 'TO', 'KM', 'KWH',
+                 'SQ', 'DEC', 'IN', 'TOTAL', 'FINAL', 'BY')
+
+df_wordcloud <- df_wordcloud %>% 
+  filter(Weight != 0 & ! Word %in% ignore_list) %>% 
+  mutate(Weight = abs(Weight)) %>%
+  mutate(Weight=scales::rescale(Weight, to=c(0, 20))) %>%
+  arrange(desc(Weight))
+
+
+df_wordcloud
+
+```
+
+```{r}
+
+
+wordcloud(df_wordcloud$Word, 
+          df_wordcloud$Weight,
+          colors = brewer.pal(8, 'Dark2'))
+
+```
+
+* Óleo, produção, gás e combustíveis parecem exercer um primeiro plano nas palavras-chave que possuem mais peso na explicação das emissões de CO2.
+
+* População, bens e trocas também exercem um papel intermediário. Com relação a trocas, temos que, na seção anterior, encontramos relações fortes com diversas variáveis ligadas ao comércio internacional (importações e exportações).
+
+Assim, nosso modelo, ao buscar as variáveis mais relevantes, encontrou três pilares determinantes na explicação das emissões de CO2:
+
+1. Em primeiro lugar: dados relativos à produção energética, principalmente no que diz respeito a Óleo.
+2. Em segundo lugar: dados macroeconômicos - população, pessoas, PIB etc.
+3. Em terceiro lugar: dados relativos ao comércio internacional (importações e exportações).
+
+E podemos concluir que a emissão de CO2 é um problema desafiante pois se encontra altamente correlacionada com termos-chave relacionados a desenvolvimento e crescimento econômico.
+
+É por isso que a produção precisa ser contida e equilibrada com uma boa diretriz ambiental no conceito de desenvolvimento sustentável.
+
+## 7. Predição - CO2 em 2014
+
+Para finalizar, iremos prever a emissão de CO2 para o ano de $2014$ (último ano da análise) conforme o proposto no roteiro deste projeto. Para isso, iremos simplesmente utilizar a função predict.
+
+Iremos também estimar as emissões para os anos de $2012$ e $2013$ pois também temos dados perdidos para a emissão de CO2 nesses anos:
+
+```{r}
+
+df_predict <- predict.lm(object=mod_ajustado,
+                       newdata=df_pca[c('2012', '2013', '2014'),],
+                       interval='prediction') %>% as.data.frame()
+
+df_predict
+
+```
+
+Plotando tais resultados:
+
+```{r}
+
+df_pca$Year <-rownames(df_pca)
+df_predict$Year <- c(2012, 2013, 2014)
+df_pca_non_missing <- df_pca %>% mutate(Year = as.numeric(Year))
+df_pca_non_missing <- df_pca_non_missing %>% filter(Year <= 2012 & Year > 2005)
+
+ggplot() + 
+  
+  geom_line(data=df_pca_non_missing, 
+            aes(x=Year, y=Y, group=1),
+            color='blue', stat='identity', group=1) + 
+  
+  geom_line(data=df_predict, aes(x=Year, y=fit),
+            colour='red',
+            linetype='dashed') +
+  
+  geom_linerange(data=df_predict, aes(x=Year, y=fit, ymin=lwr, ymax=upr),
+            color='red', group=1) +
+  
+  geom_point(data=df_pca_non_missing, aes(x=Year, y=Y), 
+             shape=21, 
+             colour='blue', 
+             fill='white', 
+             size=3, 
+             stroke=1) +
+  
+  geom_point(data=df_predict, aes(x=Year, y=fit), 
+             shape=21, 
+             colour='red', 
+             fill='white', 
+             size=3, 
+             stroke=1) +
+  
+  geom_point(data=df_predict, aes(x=Year, y=lwr), 
+             shape=45, 
+             colour='red',
+             size=15) +
+  
+  geom_point(data=df_predict, aes(x=Year, y=upr), 
+             shape=45, 
+             colour='red', 
+             size=15) +
+  
+  labs(
+    title = 'Previsão para 2012, 2013 e 2014',
+    subtitle = 'Dados históricos em azul, previsões em vermelho',
+    x = 'Ano',
+    y = 'CO2 (KT) com Erro a 5% (Para previsões)'
+  ) + theme_minimal()
+
+```
+
+O valor esperado para a emissão em KT no ano de $2014$ é de $339389.8$ em um intervalo compreendido entre $327701.9$ e $351077.6$ e a uma significância de $5\%$.
+
+Podemos ainda conferir tal resultado com o valor que, de fato ocorreu, para a emissão de CO2 na França nesse ano.  Para isso, conferimos esse site: [https://www.worldometers.info/co2-emissions/france-co2-emissions/](https://www.worldometers.info/co2-emissions/france-co2-emissions/), no qual encontramos uma emissão da ordem de $320.703.500,00$.
+
+O valor da emissão em $2014$ se encontra muito acima daquilo que realmente ocorreu e a maior queda na emissão de gás carbônico na França ocorreu justamente nesse ano ($\approx -9.0\%$). 
+
+É plenamente possível que isso tenha ocorrido devido à implementação de políticas de redução na emissão de gás carbônico que não se encontram diretamente relacionadas às variáveis explicativas do modelo (porém, tal análise foge do escopo do presente projeto).
+
+Em todo caso, isso demonstra que o modelo não é absoluto: os governos podem buscar uma crescente redução em tais emissões no intuito de implementar menos danos ambientais e isso pode ocorrer inclusive em variáveis não incluídas na base de dados aqui utilizada.
+
+Os resultados são positivos para o caso do governo francês, observa-se uma tendêcia de queda.
+
+## 8. Conclusões
+
+Com base em cada uma das etapas, podemos tirar diversas conclusões:
+
+* No processo de modelagem matemática de determinado problema, a etapa de organização e exploração de dados tendem a tomar uma parcela significativa dos esforços. Essas duas etapas podem ser realizadas conjuntamente pois a organização ocorre ao longo da exploração dos dados brutos que devem ser, paulatinamente, refinados.
+* A clusterizaçao tomou um papel importante na etapa de análise exploratória e organização de dados descrito no ponto anterior pois foi fundamental no estudo da redução do número de variáveis perdas significativas de informações.
+* Todos os testes de hipóteses foram positivos e os requisitos do modelo foram cumpridos.
+* O procedimento de decomposição por valores singulares permitiu, de forma direta, a eliminação do problema de multicolinearidade (que poderia comprometer os resultados de nossos testes de hipóteses). Porém, a aplicação de tal modelo tornou a interpretação do modelo um pouco mais trabalhosa. Entretanto, foi possível verificar a participação das variáveis iniciais nas componentes principais sem maiores prejuízos na interpretabilidade do modelo.
+* Emissões de CO2 são altamente relacionadas à indústria de Óleo e Gás e a palavras-chave ligadas à produção energética. Outros aspectos relevantes foram identificados como variáveis ligadas ao comércio mundial, à indústria bélica ou a dados demográficos e macroeconômicos.
